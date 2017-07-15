@@ -11,26 +11,36 @@ import time
 import json
 
 # Constants
+
+# Redis key to monitor
 REDIS_KEY = "sai2::optoforceSensor::6Dsensor::force"
-SIZE_WINDOW = 5000
-X_LIM = [0, 5]
+# Number of seconds to display
+TIME_WINDOW = 10
+# Y axis limits
 Y_LIM = [-1, 1]
+# Legend labels
 LABELS = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+# Line colors
 STYLES = ["r", "g", "b", "r", "g", "b"]
+# Split data into subplots at these start indices
 SUBPLOT_START = [0, 3]
 
 # Global variables
 g_runloop = True
 
 class RealtimePlotter:
+
+    INITIAL_SIZE_WINDOW = 1000
+
     def __init__(self):
         self.idx  = 0
         self.idx_lock = threading.Lock()
         self.channel = 0
         self.channel_lock = threading.Lock()
-        self.time = [np.zeros((SIZE_WINDOW,)) for _ in range(2)]
-        self.data = [np.zeros((len(LABELS), SIZE_WINDOW)) for _ in range(2)]
-        self.idx_end = [SIZE_WINDOW for _ in range(2)]
+        self.size_window = RealtimePlotter.INITIAL_SIZE_WINDOW
+        self.time = [np.zeros((self.size_window,)) for _ in range(2)]
+        self.data = [np.zeros((len(LABELS), self.size_window)) for _ in range(2)]
+        self.idx_end = [self.size_window for _ in range(2)]
 
     def redis_thread(self, logfile="output.log", host="localhost", port=6379):
         # Connect to Redis
@@ -62,34 +72,34 @@ class RealtimePlotter:
                 # Write to log
                 f.write("{0}\t{1}\n".format(t_curr - t_init, str_data))
 
-                if t_curr - t_loop > X_LIM[1]:
+                if t_curr - t_loop > TIME_WINDOW:
                     t_loop = t_curr
                     self.idx_lock.acquire()
                     self.idx_end[self.channel] = self.idx
                     self.idx = 0
                     self.idx_lock.release()
-                    print("{0} iterations, {1} Hz".format(self.idx_end[self.channel], float(self.idx_end[self.channel]) / X_LIM[1]))
+                    print("{0} iterations, {1} Hz".format(self.idx_end[self.channel], float(self.idx_end[self.channel]) / TIME_WINDOW))
 
                     self.channel_lock.acquire()
                     self.channel = 1 - self.channel
                     self.channel_lock.release()
 
-                # Update loop time
-                # if self.idx == 0:
-                #     t_loop = t_curr
-                #     self.channel_lock.acquire()
-                #     self.channel = 1 - self.channel
-                #     self.channel_lock.release()
-
                 # Update data
                 self.time[self.channel][self.idx] = t_curr - t_loop
                 self.data[self.channel][:,self.idx] = data
 
+                # Reserve more space if idx reaches window_size
+                if self.idx >= self.size_window - 1:
+                    self.channel_lock.acquire()
+                    for i in range(2):
+                        self.time[i] = np.hstack((self.time[i], np.zeros(self.time[i].shape)))
+                        self.data[i] = np.hstack((self.data[i], np.zeros(self.data[i].shape)))
+                    self.channel_lock.release()
+                    self.size_window *= 2
+
                 # Increment loop index
                 self.idx_lock.acquire()
                 self.idx += 1
-                if self.idx >= SIZE_WINDOW:
-                    self.idx = 0
                 self.idx_lock.release()
 
     def plot_thread(self):
@@ -108,13 +118,13 @@ class RealtimePlotter:
             lines += [axes[i].plot([], [], STYLES[j] + ":", animated=True)[0] for j in range(subplots[i],subplots[i+1])]
         for ax in axes:
             ax.legend()
-            ax.set_xlim(X_LIM)
+            ax.set_xlim([0, TIME_WINDOW])
             ax.set_ylim(Y_LIM)
 
         # Set up animation
         t_init = time.time()
         def animate(idx):
-            # Prevent redis_thread from changing channels during this function
+            # Prevent redis_thread from changing channels or reallocating during this function
             self.channel_lock.acquire()
 
             # Find the current timestamp in the old channel
@@ -138,7 +148,7 @@ class RealtimePlotter:
             return lines
 
         # Plot
-        ani = FuncAnimation(fig, animate, range(SIZE_WINDOW), interval=1, blit=True)
+        ani = FuncAnimation(fig, animate, interval=1, blit=True)
         plt.show(block=False)
 
         # Close on <enter>. Throws an exception on empty input()
