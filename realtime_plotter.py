@@ -17,7 +17,7 @@ X_LIM = [0, 10]
 Y_LIM = [-1, 1]
 LABELS = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
 STYLES = ["r", "g", "b", "r", "g", "b"]
-SUBPLOTS = [0, 3, len(LABELS)]
+SUBPLOT_START = [0, 3]
 
 # Global variables
 g_runloop = True
@@ -25,11 +25,11 @@ g_runloop = True
 class RealtimePlotter:
     def __init__(self):
         self.idx  = 0
+        self.idx_lock = threading.Lock()
         self.channel = 0
         self.channel_lock = threading.Lock()
         self.time = [np.zeros((SIZE_WINDOW,)) for _ in range(2)]
-        self.data = [np.zeros((6, SIZE_WINDOW)) for _ in range(2)]
-        self.lock = threading.Lock()
+        self.data = [np.zeros((len(LABELS), SIZE_WINDOW)) for _ in range(2)]
 
     def redis_thread(self, logfile="output.log", host="localhost", port=6379):
         # Connect to Redis
@@ -69,30 +69,30 @@ class RealtimePlotter:
                     self.channel_lock.release()
 
                 # Update data
-                self.lock.acquire()
                 self.time[self.channel][self.idx] = t_curr - t_loop
                 self.data[self.channel][:,self.idx] = data
 
                 # Increment loop index
+                self.idx_lock.acquire()
                 self.idx += 1
                 if self.idx >= SIZE_WINDOW:
                     self.idx = 0
-
-                self.lock.release()
+                self.idx_lock.release()
 
     def plot_thread(self):
         # Set up plot
-        num_subplots = len(SUBPLOTS) - 1
+        subplots = SUBPLOT_START + [len(LABELS)]
+        num_subplots = len(SUBPLOT_START)
         fig, axes = plt.subplots(nrows=num_subplots)
-        def plot(ax, style, label):
-            return ax.plot([], [], style, label=label, animated=True)[0]
+        if num_subplots == 1:
+            axes = [axes]
         lines = []
         # Add lines for current channel
         for i in range(num_subplots):
-            lines += [plot(axes[i], STYLES[j] + "-", LABELS[j]) for j in range(SUBPLOTS[i],SUBPLOTS[i+1])]
+            lines += [axes[i].plot([], [], STYLES[j], label=LABELS[j], animated=True)[0] for j in range(subplots[i],subplots[i+1])]
         # Add lines for old channel
         for i in range(num_subplots):
-            lines += [plot(axes[i], STYLES[j] + ":", LABELS[j]) for j in range(SUBPLOTS[i],SUBPLOTS[i+1])]
+            lines += [axes[i].plot([], [], STYLES[j] + ":", animated=True)[0] for j in range(subplots[i],subplots[i+1])]
         for ax in axes:
             ax.legend()
             ax.set_xlim(X_LIM)
@@ -105,17 +105,16 @@ class RealtimePlotter:
             self.channel_lock.acquire()
 
             # Find the current timestamp in the old channel
-            self.lock.acquire()
-            t_curr = self.time[self.channel][self.idx-1]
-            self.lock.release()
+            self.idx_lock.acquire()
+            idx_curr = self.idx
+            self.idx_lock.release()
+            t_curr = self.time[self.channel][idx_curr-1]
             idx_old = np.searchsorted(self.time[1-self.channel], t_curr, side="right")
 
             for i, line in enumerate(lines):
                 if i < 6:
                     # Plot the current channel up to the current timestamp
-                    self.lock.acquire()
-                    line.set_data(self.time[self.channel][:self.idx], self.data[self.channel][i,:self.idx])
-                    self.lock.release()
+                    line.set_data(self.time[self.channel][:idx_curr], self.data[self.channel][i,:idx_curr])
                 else:
                     # Plot the old channel from the current timestamp
                     line.set_data(self.time[1-self.channel][idx_old:], self.data[1-self.channel][i-6,idx_old:])
