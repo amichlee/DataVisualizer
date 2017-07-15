@@ -10,37 +10,39 @@ import threading
 import time
 import json
 
-# Constants
-
 # Redis key to monitor
 REDIS_KEY = "sai2::optoforceSensor::6Dsensor::force"
-# Number of seconds to display
-TIME_WINDOW = 10
-# Y axis limits
-Y_LIM = [-1, 1]
+
 # Legend labels
 LABELS = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+
 # Line colors
-STYLES = ["r", "g", "b", "r", "g", "b"]
+COLORS = ["r", "g", "b", "r", "g", "b"]
+
 # Split data into subplots at these start indices
 SUBPLOT_START = [0, 3]
 
-# Global variables
-g_runloop = True
+# Number of seconds to display
+TIME_WINDOW = 10
+
+# Y axis limits
+Y_LIM = [-1, 1]
+
 
 class RealtimePlotter:
 
-    INITIAL_SIZE_WINDOW = 1000
+    INITIAL_WINDOW_SIZE = 1000
 
     def __init__(self):
         self.idx  = 0
         self.idx_lock = threading.Lock()
         self.channel = 0
         self.channel_lock = threading.Lock()
-        self.size_window = RealtimePlotter.INITIAL_SIZE_WINDOW
+        self.size_window = RealtimePlotter.INITIAL_WINDOW_SIZE
         self.time = [np.zeros((self.size_window,)) for _ in range(2)]
         self.data = [np.zeros((len(LABELS), self.size_window)) for _ in range(2)]
         self.idx_end = [self.size_window for _ in range(2)]
+        self.run_loop = True
 
     def redis_thread(self, logfile="output.log", host="localhost", port=6379):
         # Connect to Redis
@@ -50,13 +52,14 @@ class RealtimePlotter:
         with open(logfile, "w") as f:
             t_init = time.time()
             t_loop = t_init
-            while g_runloop:
+            t_elapsed = 0
+            while self.run_loop:
                 # Get Redis key
                 str_data = redis_client.get(REDIS_KEY)
                 t_curr = time.time()
 
-                # TODO: remove
-                str_data = " ".join(str(x) for x in np.sin(np.array(range(6)) + t_curr).tolist())
+                # TODO: Remove - for debugging
+                # str_data = " ".join(str(x) for x in np.sin(np.array(range(6)) + t_curr).tolist())
 
                 # Parse Redis string
                 try:
@@ -66,7 +69,7 @@ class RealtimePlotter:
                         data = [float(el.strip()) for el in str_data.split(" ")]
                 except:
                     print("Invalid Redis key: {0} = {1}".format(REDIS_KEY, str_data))
-                    time.sleep(0.1)
+                    time.sleep(1.0)
                     continue
 
                 # Write to log
@@ -78,7 +81,8 @@ class RealtimePlotter:
                     self.idx_end[self.channel] = self.idx
                     self.idx = 0
                     self.idx_lock.release()
-                    print("{0} iterations, {1} Hz".format(self.idx_end[self.channel], float(self.idx_end[self.channel]) / TIME_WINDOW))
+                    t_elapsed += TIME_WINDOW
+                    print("{0}s elapsed: {1} iterations/loop, {2} Hz".format(t_elapsed, self.idx_end[self.channel], float(self.idx_end[self.channel]) / TIME_WINDOW))
 
                     self.channel_lock.acquire()
                     self.channel = 1 - self.channel
@@ -112,10 +116,10 @@ class RealtimePlotter:
         lines = []
         # Add lines for current channel
         for i in range(num_subplots):
-            lines += [axes[i].plot([], [], STYLES[j], label=LABELS[j], animated=True)[0] for j in range(subplots[i],subplots[i+1])]
+            lines += [axes[i].plot([], [], COLORS[j], label=LABELS[j], animated=True)[0] for j in range(subplots[i],subplots[i+1])]
         # Add lines for old channel
         for i in range(num_subplots):
-            lines += [axes[i].plot([], [], STYLES[j] + ":", animated=True)[0] for j in range(subplots[i],subplots[i+1])]
+            lines += [axes[i].plot([], [], COLORS[j] + ":", animated=True)[0] for j in range(subplots[i],subplots[i+1])]
         for ax in axes:
             ax.legend()
             ax.set_xlim([0, TIME_WINDOW])
@@ -156,13 +160,13 @@ class RealtimePlotter:
             input("Hit <enter> to close.\n")
         except:
             pass
-        g_runloop = False
+        self.run_loop = False
         plt.close()
 
 if __name__ == "__main__":
     # Parse arguments
     parser = ArgumentParser(description=(
-        "Plot Optoforce sensor readings in real time."
+        "Plot Redis values in real time."
     ))
     parser.add_argument("-rh", "--redis_host", help="Redis hostname (default: localhost)", default="localhost")
     parser.add_argument("-rp", "--redis_port", help="Redis port (default: 6379)", default=6379, type=int)
