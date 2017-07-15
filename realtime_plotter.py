@@ -13,7 +13,7 @@ import json
 # Constants
 REDIS_KEY = "sai2::optoforceSensor::6Dsensor::force"
 SIZE_WINDOW = 5000
-X_LIM = [0, 10]
+X_LIM = [0, 5]
 Y_LIM = [-1, 1]
 LABELS = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
 STYLES = ["r", "g", "b", "r", "g", "b"]
@@ -30,6 +30,7 @@ class RealtimePlotter:
         self.channel_lock = threading.Lock()
         self.time = [np.zeros((SIZE_WINDOW,)) for _ in range(2)]
         self.data = [np.zeros((len(LABELS), SIZE_WINDOW)) for _ in range(2)]
+        self.idx_end = [SIZE_WINDOW for _ in range(2)]
 
     def redis_thread(self, logfile="output.log", host="localhost", port=6379):
         # Connect to Redis
@@ -61,12 +62,24 @@ class RealtimePlotter:
                 # Write to log
                 f.write("{0}\t{1}\n".format(t_curr - t_init, str_data))
 
-                # Update loop time
-                if self.idx == 0:
+                if t_curr - t_loop > X_LIM[1]:
                     t_loop = t_curr
+                    self.idx_lock.acquire()
+                    self.idx_end[self.channel] = self.idx
+                    self.idx = 0
+                    self.idx_lock.release()
+                    print("{0} iterations, {1} Hz".format(self.idx_end[self.channel], float(self.idx_end[self.channel]) / X_LIM[1]))
+
                     self.channel_lock.acquire()
                     self.channel = 1 - self.channel
                     self.channel_lock.release()
+
+                # Update loop time
+                # if self.idx == 0:
+                #     t_loop = t_curr
+                #     self.channel_lock.acquire()
+                #     self.channel = 1 - self.channel
+                #     self.channel_lock.release()
 
                 # Update data
                 self.time[self.channel][self.idx] = t_curr - t_loop
@@ -105,11 +118,13 @@ class RealtimePlotter:
             self.channel_lock.acquire()
 
             # Find the current timestamp in the old channel
+            old_channel = 1 - self.channel
             self.idx_lock.acquire()
             idx_curr = self.idx
+            idx_old_end = self.idx_end[old_channel]
             self.idx_lock.release()
             t_curr = self.time[self.channel][idx_curr-1]
-            idx_old = np.searchsorted(self.time[1-self.channel], t_curr, side="right")
+            idx_old_start = np.searchsorted(self.time[old_channel][:idx_old_end], t_curr, side="right")
 
             for i, line in enumerate(lines):
                 if i < 6:
@@ -117,7 +132,7 @@ class RealtimePlotter:
                     line.set_data(self.time[self.channel][:idx_curr], self.data[self.channel][i,:idx_curr])
                 else:
                     # Plot the old channel from the current timestamp
-                    line.set_data(self.time[1-self.channel][idx_old:], self.data[1-self.channel][i-6,idx_old:])
+                    line.set_data(self.time[old_channel][idx_old_start:idx_old_end], self.data[old_channel][i-6,idx_old_start:idx_old_end])
 
             self.channel_lock.release()
             return lines
@@ -128,7 +143,7 @@ class RealtimePlotter:
 
         # Close on <enter>. Throws an exception on empty input()
         try:
-            input("Hit <enter> to close.")
+            input("Hit <enter> to close.\n")
         except:
             pass
         g_runloop = False
